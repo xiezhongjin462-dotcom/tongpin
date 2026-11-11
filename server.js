@@ -29,7 +29,8 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const db = new DatabaseSync(DB_FILE);
 db.exec(`
-  PRAGMA journal_mode = WAL;
+  PRAGMA journal_mode = DELETE;
+  PRAGMA busy_timeout = 5000;
   PRAGMA foreign_keys = ON;
 
   CREATE TABLE IF NOT EXISTS users (
