@@ -7,6 +7,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY server.js ./
+COPY cloud.js ./
 COPY public ./public
 COPY scripts ./scripts
 

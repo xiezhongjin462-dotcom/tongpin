@@ -1,8 +1,11 @@
+# 免费持久化部署：
+# 计算在 Render Free，数据库快照与上传文件存入 Supabase Storage。
+# 部署时 Render 会要求填写 SUPABASE_URL 与 SUPABASE_SERVICE_ROLE_KEY。
 services:
   - type: web
     name: tongpin
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm ci --omit=dev
     startCommand: npm start
     healthCheckPath: /api/health
@@ -10,13 +13,17 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 24.21.0
-      - key: DATA_DIR
-        value: /var/data
-      - key: UPLOAD_DIR
-        value: /var/data/uploads
+      - key: NODE_ENV
+        value: production
       - key: HOST
         value: 0.0.0.0
-    disk:
-      name: tongpin-data
-      mountPath: /var/data
-      sizeGB: 1
+      - key: DATA_DIR
+        value: /tmp/tongpin-data
+      - key: UPLOAD_DIR
+        value: /tmp/tongpin-uploads
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: tongpin

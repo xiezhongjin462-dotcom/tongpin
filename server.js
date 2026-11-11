@@ -3,8 +3,20 @@ import multer from 'multer';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import {
+  cloudEnabled,
+  cloudBucket,
+  ensureCloudBucket,
+  restoreDatabaseSnapshot,
+  uploadDatabaseSnapshot,
+  uploadFileObject,
+  fetchFileObject,
+  deleteFileObject,
+  cloudStatus,
+} from './cloud.js';
 
 const nodeMajor = Number(process.versions.node.split('.')[0]);
 if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
@@ -26,6 +38,18 @@ const SESSION_DAYS = 30;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+if (cloudEnabled) {
+  try {
+    await ensureCloudBucket();
+    const restored = await restoreDatabaseSnapshot(DB_FILE);
+    console.log(`[cloud] Supabase 存储已连接 · 桶 ${cloudBucket} · ${restored ? '数据库快照已恢复' : '暂无数据库快照，使用空数据库'}`);
+  } catch (error) {
+    console.error(`[cloud] Supabase 初始化失败：${error.message}`);
+    console.error('[cloud] 为避免覆盖云端数据，服务已停止启动。请检查 SUPABASE_URL 与 SUPABASE_SERVICE_ROLE_KEY。');
+    process.exit(1);
+  }
+}
 
 const db = new DatabaseSync(DB_FILE);
 db.exec(`
@@ -199,10 +223,23 @@ app.use((req, res, next) => {
   next();
 });
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'tongpin', time: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    service: 'tongpin',
+    time: new Date().toISOString(),
+    storage: cloudStatus(),
+    database: cloudEnabled ? 'supabase-snapshot' : 'local-sqlite',
+    lastBackupAt: cloudEnabled ? lastCloudBackupAt : null,
+    lastBackupError: cloudEnabled ? lastCloudBackupError : null,
+  });
 });
-app.use('/api', (_req, res, next) => {
+app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    res.on('finish', () => {
+      if (res.statusCode < 400) scheduleCloudBackup();
+    });
+  }
   next();
 });
 app.use(express.json({ limit: '1mb' }));
@@ -466,6 +503,58 @@ setInterval(() => {
     if (now - bucket.startedAt > 15 * 60_000) rateBuckets.delete(key);
   }
 }, 5 * 60_000).unref();
+
+// ---------------- Durable cloud snapshots ----------------
+
+let cloudBackupTimer = null;
+let cloudBackupRunning = false;
+let cloudBackupQueued = false;
+let cloudBackupStopping = false;
+let lastCloudBackupAt = null;
+let lastCloudBackupError = null;
+
+function scheduleCloudBackup(delay = 250) {
+  if (!cloudEnabled || cloudBackupStopping) return;
+  if (cloudBackupTimer) clearTimeout(cloudBackupTimer);
+  cloudBackupTimer = setTimeout(() => {
+    cloudBackupTimer = null;
+    runCloudBackup();
+  }, delay);
+}
+
+async function runCloudBackup() {
+  if (!cloudEnabled) return;
+  if (cloudBackupRunning) {
+    cloudBackupQueued = true;
+    return;
+  }
+  cloudBackupRunning = true;
+  const snapshotFile = path.join(DATA_DIR, `.tongpin-snapshot-${process.pid}.db`);
+  try {
+    fs.rmSync(snapshotFile, { force: true });
+    db.exec(`VACUUM INTO '${snapshotFile.replace(/'/g, "''")}'`);
+    await uploadDatabaseSnapshot(snapshotFile);
+    lastCloudBackupAt = nowIso();
+    lastCloudBackupError = null;
+  } catch (error) {
+    lastCloudBackupError = error.message;
+    console.error(`[cloud] 数据库备份失败：${error.message}`);
+  } finally {
+    fs.rmSync(snapshotFile, { force: true });
+    cloudBackupRunning = false;
+    if (cloudBackupQueued && !cloudBackupStopping) {
+      cloudBackupQueued = false;
+      scheduleCloudBackup(50);
+    } else if (lastCloudBackupError && !cloudBackupStopping) {
+      setTimeout(() => scheduleCloudBackup(0), 30_000).unref();
+    }
+  }
+}
+
+// Safety net: also snapshot periodically while the process is awake.
+setInterval(() => {
+  if (cloudEnabled && !cloudBackupStopping) scheduleCloudBackup(0);
+}, 10 * 60_000).unref();
 
 // ---------------- Authentication ----------------
 
@@ -1037,30 +1126,44 @@ app.post('/api/projects/:id/status', requireAuth, loadProjectMember, requireActi
 
 // ---------------- Pre-discussion posts & comments ----------------
 
-app.post('/api/projects/:id/posts', requireAuth, loadProjectMember, requireActive, upload.single('file'), (req, res) => {
-  const title = cleanText(req.body.title, 80);
-  const content = cleanText(req.body.content, 4000);
-  if (!title && !content && !req.file) {
-    if (req.file) removeUpload(req.file.filename);
-    return res.status(400).json({ error: '写一点想法，或上传一份资料再发布。' });
+app.post('/api/projects/:id/posts', requireAuth, loadProjectMember, requireActive, upload.single('file'), async (req, res, next) => {
+  try {
+    const title = cleanText(req.body.title, 80);
+    const content = cleanText(req.body.content, 4000);
+    if (!title && !content && !req.file) {
+      if (req.file) removeUpload(req.file.filename);
+      return res.status(400).json({ error: '写一点想法，或上传一份资料再发布。' });
+    }
+    let fileId = null;
+    if (req.file) {
+      fileId = newId();
+      if (cloudEnabled) {
+        try {
+          await uploadFileObject(req.file.filename, req.file.path, req.file.mimetype);
+          removeUpload(req.file.filename);
+        } catch (error) {
+          removeUpload(req.file.filename);
+          error.status = 502;
+          throw error;
+        }
+      }
+      db.prepare(`
+        INSERT INTO files (id, project_id, uploader_id, original_name, stored_name, mime, size, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(fileId, req.project.id, req.user.id, normalizedFileName(req.file.originalname), req.file.filename,
+        req.file.mimetype || 'application/octet-stream', req.file.size, nowIso());
+    }
+    const id = newId();
+    const createdAt = nowIso();
+    db.prepare('INSERT INTO posts (id, project_id, user_id, title, content, file_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(id, req.project.id, req.user.id, title, content, fileId, createdAt);
+    db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(createdAt, req.project.id);
+    logActivity(req.project.id, req.user.id, 'post', `发布了${fileId ? '资料' : '讨论'}「${title || content.slice(0, 20) || '未命名'}」`);
+    emitProject(req.project.id, 'post');
+    res.status(201).json({ ok: true, id });
+  } catch (error) {
+    next(error);
   }
-  let fileId = null;
-  if (req.file) {
-    fileId = newId();
-    db.prepare(`
-      INSERT INTO files (id, project_id, uploader_id, original_name, stored_name, mime, size, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(fileId, req.project.id, req.user.id, normalizedFileName(req.file.originalname), req.file.filename,
-      req.file.mimetype || 'application/octet-stream', req.file.size, nowIso());
-  }
-  const id = newId();
-  const createdAt = nowIso();
-  db.prepare('INSERT INTO posts (id, project_id, user_id, title, content, file_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(id, req.project.id, req.user.id, title, content, fileId, createdAt);
-  db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(createdAt, req.project.id);
-  logActivity(req.project.id, req.user.id, 'post', `发布了${fileId ? '资料' : '讨论'}「${title || content.slice(0, 20) || '未命名'}」`);
-  emitProject(req.project.id, 'post');
-  res.status(201).json({ ok: true, id });
 });
 
 app.delete('/api/projects/:id/posts/:postId', requireAuth, loadProjectMember, (req, res) => {
@@ -1071,7 +1174,14 @@ app.delete('/api/projects/:id/posts/:postId', requireAuth, loadProjectMember, (r
   }
   if (post.file_id) {
     const file = db.prepare('SELECT * FROM files WHERE id = ?').get(post.file_id);
-    if (file) removeUpload(file.stored_name);
+    if (file) {
+      if (cloudEnabled) {
+        deleteFileObject(file.stored_name).catch((error) => {
+          console.error(`[cloud] 云端文件删除失败：${error.message}`);
+        });
+      }
+      removeUpload(file.stored_name);
+    }
     db.prepare('DELETE FROM files WHERE id = ?').run(post.file_id);
   }
   db.prepare("DELETE FROM comments WHERE project_id = ? AND target_type = 'post' AND target_id = ?").run(req.project.id, post.id);
@@ -1299,23 +1409,46 @@ const mimeByExt = {
   '.7z': 'application/x-7z-compressed',
 };
 
-app.get('/api/files/:fileId', requireAuth, (req, res) => {
-  const file = db.prepare('SELECT * FROM files WHERE id = ?').get(req.params.fileId);
-  if (!file) return res.status(404).json({ error: '文件不存在。' });
-  if (!membership(file.project_id, req.user.id)) return res.status(403).json({ error: '无权访问该文件。' });
-  const full = path.join(UPLOAD_DIR, file.stored_name);
-  if (path.dirname(full) !== UPLOAD_DIR || !fs.existsSync(full)) {
-    return res.status(404).json({ error: '文件已丢失，请重新上传。' });
+app.get('/api/files/:fileId', requireAuth, async (req, res, next) => {
+  try {
+    const file = db.prepare('SELECT * FROM files WHERE id = ?').get(req.params.fileId);
+    if (!file) return res.status(404).json({ error: '文件不存在。' });
+    if (!membership(file.project_id, req.user.id)) return res.status(403).json({ error: '无权访问该文件。' });
+    const ext = path.extname(file.stored_name).toLowerCase();
+    const contentType = mimeByExt[ext] || 'application/octet-stream';
+    const disposition = req.query.download === '1' ? 'attachment' : 'inline';
+    const encoded = encodeURIComponent(file.original_name);
+
+    if (cloudEnabled) {
+      const upstream = await fetchFileObject(file.stored_name);
+      if (!upstream || upstream.status === 404) return res.status(404).json({ error: '文件已丢失，请重新上传。' });
+      if (!upstream.ok || !upstream.body) return res.status(502).json({ error: '云端文件暂时无法读取，请稍后重试。' });
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', file.size);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encoded}`);
+      res.setHeader('Accept-Ranges', 'none');
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      Readable.fromWeb(upstream.body).on('error', (error) => {
+        console.error(`[cloud] 文件流读取失败：${error.message}`);
+        res.destroy(error);
+      }).pipe(res);
+      return;
+    }
+
+    const full = path.join(UPLOAD_DIR, file.stored_name);
+    if (path.dirname(full) !== UPLOAD_DIR || !fs.existsSync(full)) {
+      return res.status(404).json({ error: '文件已丢失，请重新上传。' });
+    }
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', file.size);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encoded}`);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    fs.createReadStream(full).pipe(res);
+  } catch (error) {
+    next(error);
   }
-  const ext = path.extname(file.stored_name).toLowerCase();
-  const contentType = mimeByExt[ext] || 'application/octet-stream';
-  const disposition = req.query.download === '1' ? 'attachment' : 'inline';
-  const encoded = encodeURIComponent(file.original_name);
-  res.setHeader('Content-Type', contentType);
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encoded}`);
-  res.setHeader('Cache-Control', 'private, max-age=3600');
-  fs.createReadStream(full).pipe(res);
 });
 
 // ---------------- Server-sent events for live updates ----------------
@@ -1433,20 +1566,53 @@ app.use((err, req, res, _next) => {
   if (err.status && err.status >= 400 && err.status < 500) {
     return res.status(err.status).json({ error: err.message || '请求无效。' });
   }
+  if (err.status === 502) {
+    return res.status(502).json({ error: '云端存储暂时不可用，请稍后再试。' });
+  }
   res.status(500).json({ error: '服务器开小差了，请稍后再试。' });
 });
 
 const server = app.listen(PORT, HOST, () => {
-  console.log(`Tongpin running on ${HOST}:${PORT}`);
+  console.log(`Tongpin running on ${HOST}:${PORT}${cloudEnabled ? ' (Supabase persistence)' : ''}`);
 });
 
+let shuttingDown = false;
 function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  cloudBackupStopping = true;
   console.log('\nShutting down…');
-  server.close(() => {
+  if (cloudBackupTimer) {
+    clearTimeout(cloudBackupTimer);
+    cloudBackupTimer = null;
+  }
+  for (const clients of streams.values()) {
+    for (const stream of clients) {
+      try { stream.end(); } catch { /* ignore */ }
+    }
+  }
+  streams.clear();
+  let finished = false;
+  const finish = async () => {
+    if (finished) return;
+    finished = true;
+    if (cloudEnabled) {
+      try {
+        const deadline = Date.now() + 5000;
+        while (cloudBackupRunning && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        await runCloudBackup();
+      } catch (error) {
+        console.error(`[cloud] 关闭前备份失败：${error.message}`);
+      }
+    }
     try { db.close(); } catch { /* ignore */ }
     process.exit(0);
-  });
-  setTimeout(() => process.exit(0), 3000).unref();
+  };
+  server.close(() => { finish(); });
+  setTimeout(finish, 6000).unref();
+  setTimeout(() => process.exit(0), 12_000).unref();
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
