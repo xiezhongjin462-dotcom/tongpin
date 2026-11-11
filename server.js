@@ -20,7 +20,7 @@ const INDEX_FILE = path.join(PUBLIC_DIR, 'index.html');
 const INDEX_TEMPLATE = fs.readFileSync(INDEX_FILE, 'utf8');
 const DB_FILE = process.env.DB_PATH || path.join(DATA_DIR, 'tongpin.db');
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.IP || process.env.HOST || '0.0.0.0';
 const SESSION_COOKIE = 'tp_session';
 const SESSION_DAYS = 30;
 
@@ -1437,7 +1437,7 @@ app.use((err, req, res, _next) => {
 });
 
 const server = app.listen(PORT, HOST, () => {
-  console.log(`Tongpin running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+  console.log(`Tongpin running on ${HOST}:${PORT}`);
 });
 
 function shutdown() {
