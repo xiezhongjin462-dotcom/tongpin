@@ -1,0 +1,20 @@
+{
+  "name": "tongpin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "同频 — 把公司工作流带进小组作业的协作空间",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "seed": "node scripts/seed-demo.mjs",
+    "check": "node --check server.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "multer": "^2.0.2"
+  }
+}

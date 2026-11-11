@@ -1,0 +1,12 @@
+{
+  "name": "同频 · 小组协作空间",
+  "short_name": "同频",
+  "description": "把小组作业做成一件漂亮的事。",
+  "start_url": "/home",
+  "display": "standalone",
+  "background_color": "#f5f5f7",
+  "theme_color": "#f5f5f7",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

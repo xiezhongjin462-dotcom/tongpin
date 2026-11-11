@@ -1,0 +1,10 @@
+node_modules
+data
+uploads
+.git
+.github
+docs
+*.log
+.env
+.pnpm-store
+test-results
