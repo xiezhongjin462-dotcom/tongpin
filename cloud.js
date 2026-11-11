@@ -79,12 +79,27 @@ export async function ensureCloudBucket() {
   return false;
 }
 
+async function isMissingObjectResponse(res) {
+  if (res.status === 404) return true;
+  if (res.status !== 400) return false;
+  try {
+    const body = await res.clone().json();
+    return String(body.statusCode) === '404'
+      || body.error === 'not_found'
+      || body.code === 'NoSuchKey'
+      || body.message === 'Object not found';
+  } catch {
+    return false;
+  }
+}
+
 async function fetchObject(key) {
   const res = await fetch(objectUrl('/storage/v1/object', key), {
     headers: headers(),
     signal: AbortSignal.timeout(90_000),
   });
-  if (res.ok || res.status === 404) return res;
+  if (res.ok) return res;
+  if (await isMissingObjectResponse(res)) return null;
   await checkResponse(res, '无法从 Supabase 读取对象');
   return null;
 }
@@ -93,7 +108,6 @@ export async function restoreDatabaseSnapshot(destination) {
   if (!cloudEnabled) return false;
   const res = await fetchObject(DB_OBJECT);
   if (!res) return false;
-  if (res.status === 404) return false;
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!buffer.length) return false;
   const temp = `${destination}.restore-${process.pid}.tmp`;
