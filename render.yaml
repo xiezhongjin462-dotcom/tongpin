@@ -1,6 +1,6 @@
 # 免费持久化部署：
 # 计算在 Render Free，数据库快照与上传文件存入 Supabase Storage。
-# 部署时 Render 会要求填写 SUPABASE_URL 与 SUPABASE_SERVICE_ROLE_KEY。
+# 部署时 Render 会要求填写 SUPABASE_URL 与 SUPABASE_SECRET_KEY。
 services:
   - type: web
     name: tongpin
@@ -23,7 +23,7 @@ services:
         value: /tmp/tongpin-uploads
       - key: SUPABASE_URL
         sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
+      - key: SUPABASE_SECRET_KEY
         sync: false
       - key: SUPABASE_BUCKET
         value: tongpin

@@ -104,7 +104,7 @@ uploads/
 
 ```bash
 SUPABASE_URL="https://xxxx.supabase.co" \
-SUPABASE_SERVICE_ROLE_KEY="你的 service_role key" \
+SUPABASE_SECRET_KEY="你的 secret key" \
 SUPABASE_BUCKET=tongpin \
 npm start
 ```
@@ -130,9 +130,9 @@ GitHub 用来保存源码；运行和持久化由 **Render Free + Supabase Free*
 4. 等待项目初始化完成。
 5. 进入 **Project Settings → API**，复制：
    - **Project URL**
-   - **service_role** 密钥（不是 `anon` key）
+   - **Secret key**（`sb_secret_...`；不是 Publishable key）
 
-`service_role` 权限很高，只能填写在服务端环境变量中，**不要提交到 GitHub，也不要发到聊天里**。
+Secret key 权限很高，只能填写在服务端环境变量中，**不要提交到 GitHub，也不要发到聊天里**。
 
 不需要手动创建存储桶，应用首次启动会自动创建私有桶 `tongpin`。
 
@@ -156,7 +156,7 @@ git push -u origin main
 4. 按提示填写两个环境变量：
    ```text
    SUPABASE_URL=你的 Project URL
-   SUPABASE_SERVICE_ROLE_KEY=你的 service_role key
+   SUPABASE_SECRET_KEY=你的 secret key
    ```
 5. 选择 **Free** 实例并部署。
 6. 打开分配的 `https://xxxx.onrender.com`，访问 `/api/health`：
@@ -196,7 +196,7 @@ git push -u origin main
 | `UPLOAD_DIR` | `./uploads` | 上传临时目录；Render Free 建议 `/tmp/tongpin-uploads` |
 | `DB_PATH` | `$DATA_DIR/tongpin.db` | 可单独指定数据库文件 |
 | `SUPABASE_URL` | 空 | Supabase Project URL；填写后启用云持久化 |
-| `SUPABASE_SERVICE_ROLE_KEY` | 空 | Supabase `service_role` 密钥，只在服务端使用 |
+| `SUPABASE_SECRET_KEY` | 空 | Supabase Secret key，只在服务端使用 |
 | `SUPABASE_BUCKET` | `tongpin` | 私有存储桶名称，可自动创建 |
 
 ## 项目结构
@@ -224,7 +224,7 @@ git push -u origin main
 ## 数据与安全
 
 - Supabase 桶默认私有；文件通过后端鉴权后代理下载，不暴露公共链接。
-- `service_role` 仅存放于服务端环境变量。
+- Secret key 仅存放于服务端环境变量。
 - 项目接口都校验项目成员身份；文件下载也校验成员身份。
 - 上传文件白名单限制，随机文件名存储，响应带 `nosniff`。
 - 项目密码与账号密码均不可逆存储；忘记项目密码只能由发起者重设。

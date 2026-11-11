@@ -3,23 +3,26 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
-const SUPABASE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '');
+const SUPABASE_KEY = String(process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '');
 const BUCKET = String(process.env.SUPABASE_BUCKET || 'tongpin').trim() || 'tongpin';
 const DB_OBJECT = 'system/tongpin.db';
 const UPLOAD_PREFIX = 'uploads';
 
 if (Boolean(SUPABASE_URL) !== Boolean(SUPABASE_KEY)) {
-  throw new Error('SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY 必须同时配置。');
+  throw new Error('SUPABASE_URL 和 SUPABASE_SECRET_KEY 必须同时配置。');
 }
 
 export const cloudEnabled = Boolean(SUPABASE_URL && SUPABASE_KEY);
 export const cloudBucket = BUCKET;
 export const cloudProjectUrl = SUPABASE_URL;
 
-const headers = () => ({
-  apikey: SUPABASE_KEY,
-  Authorization: `Bearer ${SUPABASE_KEY}`,
-});
+const headers = () => {
+  const result = { apikey: SUPABASE_KEY };
+  // Legacy service_role keys are JWTs and also go in Authorization.
+  // New sb_secret_* keys must only use the apikey header.
+  if (SUPABASE_KEY.startsWith('eyJ')) result.Authorization = `Bearer ${SUPABASE_KEY}`;
+  return result;
+};
 
 function encodeObjectPath(key) {
   return String(key)

@@ -46,7 +46,7 @@ if (cloudEnabled) {
     console.log(`[cloud] Supabase 存储已连接 · 桶 ${cloudBucket} · ${restored ? '数据库快照已恢复' : '暂无数据库快照，使用空数据库'}`);
   } catch (error) {
     console.error(`[cloud] Supabase 初始化失败：${error.message}`);
-    console.error('[cloud] 为避免覆盖云端数据，服务已停止启动。请检查 SUPABASE_URL 与 SUPABASE_SERVICE_ROLE_KEY。');
+    console.error('[cloud] 为避免覆盖云端数据，服务已停止启动。请检查 SUPABASE_URL 与 SUPABASE_SECRET_KEY。');
     process.exit(1);
   }
 }
